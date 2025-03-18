@@ -30,8 +30,14 @@ merged_df = dfs[0]
 for df in dfs[1:]:
     merged_df = pd.merge(merged_df, df, on="Date", how="outer")  # Outer join to retain all dates
 
+# Conver to date 
+
+merged_df["Date"] = pd.to_datetime(merged_df["Date"], format="%d-%m-%Y")
 
 # Sort by date
 merged_df.sort_values(by="Date", inplace=True)
 
 merged_df.head()
+
+# prova
+
