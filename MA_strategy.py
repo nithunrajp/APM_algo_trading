@@ -27,14 +27,13 @@ for file in csv_files:
 
 # Merge all DataFrames on "Date"
 merged_df = dfs[0]
-for df in dfs[1:]:
-    merged_df = pd.merge(merged_df, df, on="Date", how="outer")  # Outer join to retain all dates
 
-# Conver to date 
+# Define moving avg 
 
-merged_df["Date"] = pd.to_datetime(merged_df["Date"], format="%d-%m-%Y")
+ma_df_st = merged_df['A_adjclose'].ewm(span=20, adjust=False).mean()
+ma_df_lt = merged_df['A_adjclose'].ewm(span=100, adjust=False).mean() 
 
-# Sort by date
-merged_df.sort_values(by="Date", inplace=True)
-
-print(merged_df.head())
+if ma_df_st > ma_df_lt:
+    print("buy")
+else: 
+    print("sell")
