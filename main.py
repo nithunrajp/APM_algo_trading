@@ -38,3 +38,5 @@ merged_df["Date"] = pd.to_datetime(merged_df["Date"], format="%d-%m-%Y")
 merged_df.sort_values(by="Date", inplace=True)
 
 print(merged_df.head())
+
+merged_df.to_csv("stock_data.csv", index=False)
