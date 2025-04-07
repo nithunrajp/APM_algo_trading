@@ -4,81 +4,137 @@ import os
 import useful_function as uf
 from bayes_opt import BayesianOptimization
 import matplotlib.pyplot as plt
-import useful_function as uf
+
+import sklearn
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras.layers import Input, Dense, LSTM
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.preprocessing.sequence import TimeseriesGenerator
+from sklearn.preprocessing import MinMaxScaler
+
+import matplotlib as mpl
+import matplotlib.pyplot as plt
+
+np.random.seed(42)
+tf.random.set_seed(42)
+
+
+
+# To plot pretty figures
+
+mpl.rc('axes', labelsize=14)
+mpl.rc('xtick', labelsize=12)
+mpl.rc('ytick', labelsize=12)
+plt.rc('figure', figsize=(5.0, 3.0))
+
 
 df = pd.read_csv('DF_data_cleaned.csv', parse_dates=['Date'], index_col='Date')
 
-returns= df.pct_change().dropna()
+ma_windows_values = [5, 7, 10, 15, 20, 30, 50, 70, 100, 150, 200, 250, 300, 400]
+rsi_window_values = [5, 7, 10, 15, 20, 30, 50, 70]
 
-### Preliminary plot 
+def df_creator(stock, ma_windows, rsi_windows): 
 
-#### date and cumulative sum 
+    data = {
+            "Prices": stock.values, 
+            "Returns": stock.shift(1).pct_change().dropna(),
+            "Volatility": stock.pct_change().shift(1).rolling(window=30).std() * np.sqrt(252),
+            "day_of_week": stock.index.dayofweek,
+            "is_month_end": stock.index.is_month_start.astype(int),
+            "is_month_start": stock.index.is_month_start.astype(int)
+            }
 
-x_data_date = returns.index
-y_data_return = returns.sum(axis=1).cumsum() 
+    for window in ma_windows:
+        data[f'ema_{ma_windows}'] = stock.shift(1).ewm(span=window, adjust=False).mean()
+        data[f'sma_{ma_windows}'] = stock.shift(1).rolling(window=window).mean()
 
-#### show it 
 
-plt.plot(x_data_date, y_data_return) 
+        
+    delta = stock.diff()
 
-plt.xlabel("Date")
-plt.ylabel("Cumulative return")
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
 
-plt.show()
+    for window in rsi_windows:
+        avg_gain = gain.shift(1).rolling(window=window).mean()
+        avg_loss = loss.shift(1).rolling(window=window).mean()
 
-def ema_signal(prices, short_window, long_window):
-    # Compute short & long EMA
-    short_ema = prices.shift(1).ewm(span=short_window, adjust=False).mean()
-    long_ema = prices.shift(1).ewm(span=long_window, adjust=False).mean()
+        rs = avg_gain / avg_loss
+        rsi = 100 - (100 / (1 + rs))
+        
+        data[f'rsi_{window}'] = rsi
 
-    # Generate raw signals
+    df = pd.DataFrame(data).dropna()
+
+    scaler = MinMaxScaler() 
+    scaled_data = scaler.fit_transform(df)  
+
     
-    signals = pd.Series(0, index=prices.index)
-    signals[short_ema > long_ema] = 1
-    signals[short_ema < long_ema] = -1
-
-    return signals.fillna(0)
-
-# create positions df 
-
-positions = pd.DataFrame(index=returns.index, columns=returns.columns)
-
-# Generate signals for each futures contract
-for col in returns.columns:
-    positions[col] = ema_signal(df[col], short_window=5, long_window=300)
+    df['return_direction'] = (df['Returns'] > 0).astype(int)
+    
+    return scaled_data, df["return_direction"].dropna().values
 
 
-pnl = (positions * returns).sum(axis=1)
-pnl
-
-def optimize_ema(short_window, long_window):
-    # Make sure short_window is less than long_window
-    if short_window >= long_window:
-        return -1e6  # big penalty
-
-    short_window = int(short_window)
-    long_window = int(long_window)
-
-    positions = pd.DataFrame(index=returns.index, columns=returns.columns)
-
-    for col in returns.columns:
-        signals = ema_signal(df[col], short_window, long_window)
-        positions[col] = signals
-
-    pnl = (positions * returns).sum(axis=1)
-    sharpe = uf.get_sr(pnl)
-
-    return sharpe
 
 
-optimizer = BayesianOptimization(
-    f=optimize_ema,
-    pbounds={
-        'short_window': (5, 50),
-        'long_window': (100, 500),
-    },
-    random_state=42,
-    verbose=2
-)
+data_dict = {}
 
-optimizer.maximize(init_points=5, n_iter=40)
+for col in ['AAPL_adjclose']:
+
+    key = f'{col[0:4]}_data'
+    data_dict[key] = df_creator(
+        df[col], 
+        ma_windows=ma_windows_values, 
+        rsi_windows=rsi_window_values
+    )
+    
+# scaled_data, returns_only = df_creator(df['AAPL_adjclose'], ma_windows_values, rsi_window_values)
+scaled_data, labels = df_creator(df['AAPL_adjclose'], ma_windows_values, rsi_window_values)
+
+labels = labels[-len(scaled_data):]
+
+timesteps = 10 # hyperparmeter to adjust later 
+batch_size = 32
+
+# Split data into training and testing sets (80% train, 20% test)
+split_idx = int(len(scaled_data) * 0.8)
+
+X_train = scaled_data[:split_idx]
+y_train = labels[:split_idx]  # SAME LENGTH as X_train
+
+X_test = scaled_data[split_idx:]
+y_test = labels[split_idx:]
+
+
+train_generator = TimeseriesGenerator(X_train, y_train,
+                                      length=timesteps, batch_size=batch_size)
+
+test_generator = TimeseriesGenerator(X_test, y_test,
+                                     length=timesteps, batch_size=batch_size)
+
+
+# Let's examine the first batch
+for X_batch, y_batch in train_generator:
+    print("X_batch shape:", X_batch.shape)  # Shape of the input sequences
+    # Shape of the corresponding target values
+    print("y_batch shape:", y_batch.shape)
+
+    # Display the first sequence and target
+    print("\nFirst sequence (X):")
+    print(X_batch[0])  # First sequence in the batch
+
+    print("\nFirst target (y):")
+    print(y_batch[0])  # First target value corresponding to the first sequence
+
+    # Break after the first batch to avoid printing all batches
+    break
+
+n_features = scaled_data.shape[1]
+
+model = Sequential()
+model.add(Input(shape=(timesteps, n_features)))
+model.add(LSTM(50, activation="relu"))
+model.add(Dense(1, activation="sigmoid"))  # for binary classification
+model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+model.summary()
