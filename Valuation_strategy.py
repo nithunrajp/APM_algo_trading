@@ -1,43 +1,89 @@
 import pandas as pd
 
-def calculate_valuation_metrics(data):
+def calculate_moving_average(data, window=30):
     """
-    Calculate valuation metrics such as PE ratio, book-to-market ratio, and price ratios.
+    Calculate the moving average (MA) for each stock's PE ratio.
     """
-    data['PE_ratio'] = data['Price'] / data['Earnings']
-    data['Book_to_Market'] = data['Book_Value'] / data['Price']
-    data['Price_Ratio'] = data['Price'] / data['Adjusted_Close']
-    return data
+    # Apply rolling mean for each stock
+    data_ma = data.set_index('Dates').rolling(window=window, min_periods=1).mean().reset_index()
+    return data_ma
 
-def select_stocks(data, top_n=10):
+def generate_trading_signals(data, ma_data):
     """
-    Select top N stocks based on valuation metrics.
+    Generate trading signals (Buy/Sell) based on PE ratio and its moving average.
     """
-    data['Score'] = data['PE_ratio'] + data['Book_to_Market'] + data['Price_Ratio']
-    selected_stocks = data.nsmallest(top_n, 'Score')  # Lower score is better
-    return selected_stocks
+    signals = pd.DataFrame()
+    for stock in data.columns[1:]:  # Skip the 'Dates' column
+        stock_data = data[['Dates', stock]].copy()
+        stock_ma = ma_data[['Dates', stock]].copy()
+        
+        stock_data['MA'] = stock_ma[stock]  # Add moving average
+        stock_data['Signal'] = 'Hold'  # Default signal
+        
+        # Generate signals
+        stock_data.loc[stock_data[stock] > stock_data['MA'], 'Signal'] = 'Sell'
+        stock_data.loc[stock_data[stock] < stock_data['MA'], 'Signal'] = 'Buy'
+        
+        # Append stock name for identification
+        stock_data['Stock'] = stock
+        signals = pd.concat([signals, stock_data], ignore_index=True)
+    
+    return signals
+
+def simulate_trading(signals, price_data):
+    """
+    Simulate trading based on signals and calculate profits/losses.
+    """
+    results = []
+    for stock in signals['Stock'].unique():
+        stock_signals = signals[signals['Stock'] == stock]
+        stock_prices = price_data[['Dates', stock]].copy()
+        
+        stock_signals = pd.merge(stock_signals, stock_prices, on='Dates', how='left')
+        stock_signals.rename(columns={stock: 'Price'}, inplace=True)
+        
+        # Simulate trading
+        profit = 0
+        position = None
+        entry_price = 0
+        
+        for _, row in stock_signals.iterrows():
+            if row['Signal'] == 'Buy' and position is None:
+                position = 'Long'
+                entry_price = row['Price']
+            elif row['Signal'] == 'Sell' and position == 'Long':
+                profit += row['Price'] - entry_price
+                position = None
+        
+        results.append({'Stock': stock, 'Profit': profit})
+    
+    return pd.DataFrame(results)
 
 def main():
-    # Load stock data
-    stock_data = pd.read_csv("stock_data.csv")
+    # Load PE ratio data from Excel
+    excel_file = "PE RATIO.xlsx"  # Path to the Excel file
+    pe_data = pd.read_excel(excel_file, sheet_name="PE_ratio_hist")  # Load the specified sheet
     
-    # Example additional data for valuation metrics
-    valuation_data = pd.read_csv("valuation_data.csv")  # Contains Price, Earnings, Book_Value columns
+    # Ensure the 'Dates' column is in datetime format
+    pe_data['Dates'] = pd.to_datetime(pe_data['Dates'], format="%d%m%Y")
     
-    # Merge stock data with valuation data
-    merged_data = pd.merge(stock_data, valuation_data, on="Date", how="inner")
+    # Calculate moving average for PE ratios
+    pe_ma = calculate_moving_average(pe_data, window=30)
     
-    # Calculate valuation metrics
-    merged_data = calculate_valuation_metrics(merged_data)
+    # Generate trading signals
+    signals = generate_trading_signals(pe_data, pe_ma)
     
-    # Select top stocks
-    top_stocks = select_stocks(merged_data)
+    # Load price data (assume it has the same structure as PE data)
+    price_data = pd.read_excel(excel_file, sheet_name="Price_hist")  # Load price data
     
-    print("Top Selected Stocks:")
-    print(top_stocks)
+    # Simulate trading and calculate profits/losses
+    results = simulate_trading(signals, price_data)
     
-    # Save selected stocks to a CSV file
-    top_stocks.to_csv("selected_stocks.csv", index=False)
+    print("Trading Results:")
+    print(results)
+    
+    # Save results to a CSV file
+    results.to_csv("trading_results.csv", index=False)
 
 if __name__ == "__main__":
     main()
